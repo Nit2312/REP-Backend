@@ -21,7 +21,8 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
 const PORT = process.env.PORT || 5000;
 const corsOptions = {
-  origin: `https://rep-frontend-beryl.vercel.app/`,  // Match the frontend origin
+  origin: `
+https://rep-update-app.onrender.com`,  // Match the frontend origin
   credentials: true,                // Allow sending cookies
 };
 app.use(cors(corsOptions));
