@@ -20,33 +20,12 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // Create Express app
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// ...existing code...
-const allowedOrigins = [
-  'https://rep-frontend-beryl.vercel.app',
-  'https://rep-frontend-beryl.vercel.app/',
-  'http://localhost:5173'
-];
-
 const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  origin: `https://rep-frontend-beryl.vercel.app/`,  // Match the frontend origin
+  credentials: true,                // Allow sending cookies
 };
-
 app.use(cors(corsOptions));
 
-// Handle preflight requests for all routes
-app.options('*', cors(corsOptions));
-// ...existing code...
 app.use(express.urlencoded({ extended: true }));
 
 // Debug middleware
