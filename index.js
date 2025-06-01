@@ -21,36 +21,29 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ...existing code...
+
 const allowedOrigins = [
   'https://rep-update-app.onrender.com',
   'https://rep-backend.onrender.com',
   'https://rep-frontend-beryl.vercel.app',
-  'https://rep-frontend-beryl.vercel.app/', // with trailing slash
   'http://localhost:5173'
 ];
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, or server-to-server)
-    if (!origin) return callback(null, true);
-    // Remove trailing slash for comparison
-    const normalizedOrigin = origin.replace(/\/$/, '');
-    if (allowedOrigins.map(o => o.replace(/\/$/, '')).includes(normalizedOrigin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-};
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  }
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
-app.use(cors(corsOptions));
-// Handle preflight requests for all routes
-app.options('*', cors(corsOptions));
-// ...existing code...
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
