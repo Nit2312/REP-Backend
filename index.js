@@ -21,7 +21,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-CORS configuration
+// CORS configuration
 app.use(cors({
   origin: process.env.NODE_ENV === 'production'
     ? ['https://rep-frontend-beryl.vercel.app/', 'https://rep-frontend-beryl.vercel.app', 'http://localhost:5173']  // Allow both Render and local development
