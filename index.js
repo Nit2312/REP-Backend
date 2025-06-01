@@ -21,22 +21,28 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS configuration
+// ...existing code...
+const allowedOrigins = [
+  'https://rep-frontend-beryl.vercel.app',
+  'https://rep-frontend-beryl.vercel.app/',
+  'http://localhost:5173'
+];
+
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? ['https://rep-frontend-beryl.vercel.app/', 'https://rep-frontend-beryl.vercel.app', 'http://localhost:5173']  // Allow both Render and local development
-    : '*',  // Allow all origins in development
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
-// app.use(cors({
-//   origin: true,
-//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-//   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-//   credentials: true
-// }));
-// Middleware
+// ...existing code...
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
