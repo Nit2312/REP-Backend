@@ -693,7 +693,7 @@ app.delete('/api/color-mix-formulas/:id', async (req, res) => {
 app.get('/api/color-mix-entries', async (req, res) => {
   try {
     console.log('GET /api/color-mix-entries - Fetching all color mix entries');
-    const [rows] = await pool.query(`
+    const result = await pool.query(`
       SELECT 
         cme.*,
         f.name as formula_name
@@ -701,106 +701,60 @@ app.get('/api/color-mix-entries', async (req, res) => {
       LEFT JOIN color_mix_formulas f ON cme.formula_id = f.id
       ORDER BY cme.created_at DESC
     `);
-    console.log('GET /api/color-mix-entries - Found entries:', rows.length);
-    res.json(rows);
+    const rows = result.rows;
+    // Parse material_weights if needed
+    const entries = rows.map(entry => {
+      let materialWeights = entry.material_weights;
+      if (typeof materialWeights === 'string') {
+        try {
+          materialWeights = JSON.parse(materialWeights);
+        } catch {
+          materialWeights = [];
+        }
+      }
+      return {
+        ...entry,
+        material_weights: materialWeights
+      };
+    });
+    res.json(entries);
   } catch (error) {
     console.error('GET /api/color-mix-entries - Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// POST /api/color-mix-entries - Create a new color mix entry
 app.post('/api/color-mix-entries', async (req, res) => {
   try {
-    console.log('POST /api/color-mix-entries - Incoming body:', req.body);
     const { formulaId, materialWeights, colorRequirement } = req.body;
-    console.log('Fields:', { formulaId, materialWeights, colorRequirement });
-    console.log('Types:', {
-      formulaId: typeof formulaId,
-      materialWeights: typeof materialWeights,
-      colorRequirement: typeof colorRequirement
-    });
-    if (!formulaId) {
-      console.error('Missing formulaId');
-      return res.status(400).json({ message: 'Missing required field: formulaId', received: req.body });
+    if (!formulaId || !materialWeights || !colorRequirement) {
+      return res.status(400).json({ message: 'Missing required fields' });
     }
-    if (!materialWeights) {
-      console.error('Missing materialWeights');
-      return res.status(400).json({ message: 'Missing required field: materialWeights', received: req.body });
-    }
-    if (colorRequirement === undefined) {
-      console.error('Missing colorRequirement');
-      return res.status(400).json({ message: 'Missing required field: colorRequirement', received: req.body });
-    }
-    let parsedMaterialWeights = materialWeights;
-    if (typeof materialWeights === 'string') {
-      try {
-        parsedMaterialWeights = JSON.parse(materialWeights);
-      } catch (e) {
-        console.error('Invalid materialWeights format:', materialWeights);
-        return res.status(400).json({ message: 'Invalid materialWeights format', received: materialWeights });
-      }
-    }
-    if (!Array.isArray(parsedMaterialWeights)) {
-      console.error('materialWeights is not an array:', parsedMaterialWeights);
-      return res.status(400).json({ message: 'materialWeights must be an array', received: parsedMaterialWeights });
-    }
-    const colorRequirementNum = Number(colorRequirement);
-    if (isNaN(colorRequirementNum)) {
-      console.error('colorRequirement is not a number:', colorRequirement);
-      return res.status(400).json({ message: 'colorRequirement must be a number', received: colorRequirement });
-    }
-    const insertQuery = `
-      INSERT INTO color_mix_entries (formula_id, material_weights, color_requirement)
-      VALUES ($1, $2, $3) RETURNING *
-    `;
-    const insertParams = [
-      formulaId,
-      JSON.stringify(parsedMaterialWeights),
-      colorRequirementNum
-    ];
-    console.log('Insert query:', insertQuery);
-    console.log('Insert params:', insertParams);
-    const result = await pool.query(insertQuery, insertParams);
-    const newEntry = result.rows[0];
-    res.status(201).json(newEntry);
+    // Store materialWeights as JSON string
+    const result = await pool.query(
+      'INSERT INTO color_mix_entries (formula_id, material_weights, color_requirement) VALUES ($1, $2, $3) RETURNING *',
+      [formulaId, JSON.stringify(materialWeights), colorRequirement]
+    );
+    res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('POST /api/color-mix-entries - Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// Update a color mix entry
 app.put('/api/color-mix-entries/:id', async (req, res) => {
   try {
-    const { formulaId, materialWeights, colorRequirement } = req.body;
     const { id } = req.params;
-    if (!formulaId || !materialWeights || colorRequirement === undefined) {
+    const { formulaId, materialWeights, colorRequirement } = req.body;
+    if (!formulaId || !materialWeights || !colorRequirement) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
-    let parsedMaterialWeights = materialWeights;
-    if (typeof materialWeights === 'string') {
-      try {
-        parsedMaterialWeights = JSON.parse(materialWeights);
-      } catch (e) {
-        return res.status(400).json({ message: 'Invalid materialWeights format' });
-      }
-    }
-    // Ensure colorRequirement is a number
-    const colorRequirementNum = Number(colorRequirement);
-    if (isNaN(colorRequirementNum)) {
-      return res.status(400).json({ message: 'colorRequirement must be a number' });
-    }
-    const updateQuery = `
-      UPDATE color_mix_entries
-      SET formula_id = $1, material_weights = $2, color_requirement = $3
-      WHERE id = $4 RETURNING *
-    `;
-    const updateParams = [
-      formulaId,
-      JSON.stringify(parsedMaterialWeights),
-      colorRequirementNum,
-      id
-    ];
-    const result = await pool.query(updateQuery, updateParams);
+    const result = await pool.query(
+      'UPDATE color_mix_entries SET formula_id = $1, material_weights = $2, color_requirement = $3 WHERE id = $4 RETURNING *',
+      [formulaId, JSON.stringify(materialWeights), colorRequirement, id]
+    );
     if (result.rowCount === 0) {
       return res.status(404).json({ message: 'Color mix entry not found' });
     }
@@ -811,147 +765,25 @@ app.put('/api/color-mix-entries/:id', async (req, res) => {
   }
 });
 
-// Moulds Routes
-app.get('/api/moulds', async (req, res) => {
-  try {
-    const mouldsResult = await pool.query('SELECT * FROM moulds ORDER BY created_at DESC');
-    res.status(200).json(mouldsResult.rows);
-  } catch (error) {
-    console.error('Error fetching moulds:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-app.post('/api/moulds', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
-  try {
-    const { name, description, status } = req.body;
-    console.log('Received mould data:', req.body);
-
-    if (!name) {
-      return res.status(400).json({ message: 'Mould name is required' });
-    }
-
-    // Check if mould with same name exists
-    const existingMould = await pool.query(
-      'SELECT id FROM moulds WHERE name = $1',
-      [name]
-    );
-
-    if (existingMould.rows.length > 0) {
-      return res.status(400).json({ message: 'A mould with this name already exists' });
-    }
-
-    // Insert new mould
-    const newMouldResult = await pool.query(
-      'INSERT INTO moulds (name, description, status) VALUES ($1, $2, $3) RETURNING *',
-      [name, description || '', status || 'active']
-    );
-
-    const newMould = newMouldResult.rows[0];
-    console.log('Created new mould:', newMould);
-    res.status(201).json(newMould);
-  } catch (error) {
-    console.error('Error creating mould:', error);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message,
-      details: error.stack 
-    });
-  }
-});
-
-app.put('/api/moulds/:id', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
+// Delete a color mix entry
+app.delete('/api/color-mix-entries/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, status } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ message: 'Mould name is required' });
+    const result = await pool.query('DELETE FROM color_mix_entries WHERE id = $1', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Color mix entry not found' });
     }
-
-    // Check if mould exists
-    const existingMould = await pool.query(
-      'SELECT id FROM moulds WHERE id = $1',
-      [id]
-    );
-
-    if (existingMould.rows.length === 0) {
-      return res.status(404).json({ message: 'Mould not found' });
-    }
-
-    // Check if name is already taken by another mould
-    const nameCheck = await pool.query(
-      'SELECT id FROM moulds WHERE name = $1 AND id != $2',
-      [name, id]
-    );
-
-    if (nameCheck.rows.length > 0) {
-      return res.status(400).json({ message: 'A mould with this name already exists' });
-    }
-
-    // Update mould
-    const updateResult = await pool.query(
-      'UPDATE moulds SET name = $1, description = $2, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING *',
-      [name, description || '', status || 'active', id]
-    );
-
-    const updatedMould = updateResult.rows[0];
-    console.log('Updated mould:', updatedMould);
-    res.status(200).json(updatedMould);
-  } catch (error) {
-    console.error('Error updating mould:', error);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message,
-      details: error.stack 
-    });
-  }
-});
-
-app.delete('/api/moulds/:id', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Check if mould exists
-    const existingMould = await pool.query(
-      'SELECT id FROM moulds WHERE id = $1',
-      [id]
-    );
-
-    if (existingMould.rows.length === 0) {
-      return res.status(404).json({ message: 'Mould not found' });
-    }
-
-    // Check if mould is referenced in any tasks
-    const taskCheck = await pool.query(
-      'SELECT id FROM tasks WHERE mould_id = $1',
-      [id]
-    );
-
-    if (taskCheck.rows.length > 0) {
-      return res.status(400).json({ 
-        message: 'Cannot delete mould as it is referenced in existing tasks',
-        taskCount: taskCheck.rows.length
-      });
-    }
-
-    // Delete mould
-    await pool.query('DELETE FROM moulds WHERE id = $1', [id]);
     res.status(204).send();
   } catch (error) {
-    console.error('Error deleting mould:', error);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message,
-      details: error.stack 
-    });
+    console.error('DELETE /api/color-mix-entries/:id - Error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Products Routes
+// Products API
 app.get('/api/products', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM products');
+    const result = await pool.query('SELECT * FROM products ORDER BY id');
     res.status(200).json(result.rows);
   } catch (error) {
     console.error('Error fetching products:', error);
@@ -959,683 +791,291 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-app.post('/api/products', async (req, res) => {
+// Moulds API
+app.get('/api/moulds', async (req, res) => {
   try {
-    const { name, description, category, status, per_hour_production } = req.body;
-    if (!name || !category) {
-      return res.status(400).json({ message: 'Product name and category are required' });
-    }
-    // Check for duplicate name
-    const dup = await pool.query('SELECT * FROM products WHERE name = $1', [name]);
-    if (dup.rows.length > 0) {
-      return res.status(400).json({ message: 'Product name already exists' });
+    const result = await pool.query('SELECT * FROM moulds ORDER BY id');
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Error fetching moulds:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Tasks Router with authentication
+const tasksRouter = express.Router();
+tasksRouter.use(authenticateToken);
+
+tasksRouter.get('/', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM tasks ORDER BY id DESC');
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Error fetching tasks:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+tasksRouter.post('/', async (req, res) => {
+  try {
+    const { name, description, machine_id, mould_id, product_id, color_mix_id, worker_id, target, status = 'pending', created_by } = req.body;
+    if (!name || !machine_id || !mould_id || !product_id || !color_mix_id || !worker_id || target === undefined) {
+      return res.status(400).json({ message: 'Missing required fields' });
     }
     const result = await pool.query(
-      'INSERT INTO products (name, description, category, status, per_hour_production) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [name, description || null, category, status || 'active', per_hour_production || null]
+      'INSERT INTO tasks (name, description, machine_id, mould_id, product_id, color_mix_id, worker_id, target, status, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
+      [name, description || null, machine_id, mould_id, product_id, color_mix_id, worker_id, target, status, created_by || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('Error creating product:', error);
+    console.error('Error creating task:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-app.put('/api/products/:id', async (req, res) => {
+tasksRouter.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, category, status, per_hour_production } = req.body;
-    if (!name || !category) {
-      return res.status(400).json({ message: 'Product name and category are required' });
-    }
-    // Check for duplicate name (excluding self)
-    const dup = await pool.query('SELECT * FROM products WHERE name = $1 AND id != $2', [name, id]);
-    if (dup.rows.length > 0) {
-      return res.status(400).json({ message: 'Product name already exists' });
+    const { name, description, machine_id, mould_id, product_id, color_mix_id, worker_id, target, status } = req.body;
+    if (!name || !machine_id || !mould_id || !product_id || !color_mix_id || !worker_id || target === undefined) {
+      return res.status(400).json({ message: 'Missing required fields' });
     }
     const result = await pool.query(
-      'UPDATE products SET name = $1, description = $2, category = $3, status = $4, per_hour_production = $5 WHERE id = $6 RETURNING *',
-      [name, description || null, category, status || 'active', per_hour_production || null, id]
+      'UPDATE tasks SET name = $1, description = $2, machine_id = $3, mould_id = $4, product_id = $5, color_mix_id = $6, worker_id = $7, target = $8, status = $9, updated_at = CURRENT_TIMESTAMP WHERE id = $10 RETURNING *',
+      [name, description || null, machine_id, mould_id, product_id, color_mix_id, worker_id, target, status, id]
     );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    res.status(200).json(result.rows[0]);
-  } catch (error) {
-    console.error('Error updating product:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-app.delete('/api/products/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await pool.query('DELETE FROM products WHERE id = $1', [id]);
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    res.status(204).send();
-  } catch (error) {
-    console.error('Error deleting product:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-// Test route to verify server is working
-app.get('/api/test', (req, res) => {
-  res.json({ message: 'Server is working' });
-});
-
-// Tasks Routes
-app.get('/api/tasks', async (req, res) => {
-  console.log('[GET /api/tasks] Fetching all tasks');
-  try {
-    const { machine_id, mould_id, product_id, worker_id, status } = req.query;
-    let whereClauses = [];
-    let params = [];
-    let paramIndex = 1;
-
-    // Only filter by worker_id if the user is a worker
-    if (req.user && req.user.role === 'worker') {
-      whereClauses.push(`t.worker_id = $${paramIndex++}`);
-      params.push(req.user.id);
-    } else if (worker_id && worker_id !== '' && !isNaN(Number(worker_id))) {
-      whereClauses.push(`t.worker_id = $${paramIndex++}`);
-      params.push(Number(worker_id));
-    }
-
-    if (machine_id && machine_id !== '' && !isNaN(Number(machine_id))) {
-      whereClauses.push(`t.machine_id = $${paramIndex++}`);
-      params.push(Number(machine_id));
-    }
-    if (mould_id && mould_id !== '' && !isNaN(Number(mould_id))) {
-      whereClauses.push(`t.mould_id = $${paramIndex++}`);
-      params.push(Number(mould_id));
-    }
-    if (product_id && product_id !== '' && !isNaN(Number(product_id))) {
-      whereClauses.push(`t.product_id = $${paramIndex++}`);
-      params.push(Number(product_id));
-    }
-    if (status && status !== '') {
-      whereClauses.push(`t.status = $${paramIndex++}`);
-      params.push(status);
-    }
-
-    const where = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
-    const query = `
-      SELECT t.*, 
-        m.name as machine_name,
-        mo.name as mould_name,
-        p.name as product_name,
-        cm.name as color_mix_name,
-        u.name as worker_name,
-        COALESCE(SUM(hpl.total_pieces), 0) as completed_pieces
-      FROM tasks t
-      LEFT JOIN machines m ON t.machine_id = m.id
-      LEFT JOIN moulds mo ON t.mould_id = mo.id
-      LEFT JOIN products p ON t.product_id = p.id
-      LEFT JOIN color_mix_formulas cm ON t.color_mix_id = cm.id
-      LEFT JOIN users u ON t.worker_id = u.id
-      LEFT JOIN hourly_production_logs hpl ON t.id = hpl.id
-      ${where}
-      GROUP BY t.id, m.name, mo.name, p.name, cm.name, u.name
-      ORDER BY t.created_at DESC
-    `;
-    const result = await pool.query(query, params);
-    const tasks = result.rows;
-    console.log(`[GET /api/tasks] Successfully fetched ${tasks.length} tasks`);
-    res.status(200).json(tasks);
-  } catch (error) {
-    console.error('[GET /api/tasks] Error fetching tasks:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-app.post('/api/tasks', async (req, res) => {
-  console.log('[POST /api/tasks] Creating new task');
-  console.log('Request body:', JSON.stringify(req.body, null, 2));
-  try {
-    const {
-      name,
-      description,
-      machine_id,
-      mould_id,
-      product_id,
-      color_mix_id,
-      worker_id,
-      target,
-      status = 'pending'
-    } = req.body;
-
-    // Validate required fields
-    if (!name || !machine_id || !mould_id || !product_id || !color_mix_id || !worker_id || target === undefined) {
-      console.log('Missing required fields:', {
-        name: !name,
-        machine_id: !machine_id,
-        mould_id: !mould_id,
-        product_id: !product_id,
-        color_mix_id: !color_mix_id,
-        worker_id: !worker_id,
-        target: target === undefined
-      });
-      return res.status(400).json({
-        message: 'Missing required fields',
-        missing: {
-          name: !name,
-          machine_id: !machine_id,
-          mould_id: !mould_id,
-          product_id: !product_id,
-          color_mix_id: !color_mix_id,
-          worker_id: !worker_id,
-          target: target === undefined
-        }
-      });
-    }
-
-    // Verify all foreign keys exist
-    console.log('Verifying foreign keys...');
-    const machineResult = await pool.query('SELECT id FROM machines WHERE id = $1', [machine_id]);
-    const mouldResult = await pool.query('SELECT id FROM moulds WHERE id = $1', [mould_id]);
-    const productResult = await pool.query('SELECT id FROM products WHERE id = $1', [product_id]);
-    const colorMixResult = await pool.query('SELECT id FROM color_mix_formulas WHERE id = $1', [color_mix_id]);
-    const workerResult = await pool.query('SELECT id FROM users WHERE id = $1', [worker_id]);
-
-    const machine = machineResult.rows;
-    const mould = mouldResult.rows;
-    const product = productResult.rows;
-    const colorMix = colorMixResult.rows;
-    const worker = workerResult.rows;
-
-    console.log('Foreign key check results:', {
-      machine: machine.length > 0,
-      mould: mould.length > 0,
-      product: product.length > 0,
-      colorMix: colorMix.length > 0,
-      worker: worker.length > 0
-    });
-
-    if (!machine.length || !mould.length || !product.length || !colorMix.length || !worker.length) {
-      return res.status(400).json({
-        message: 'Invalid foreign key references',
-        invalid: {
-          machine: !machine.length,
-          mould: !mould.length,
-          product: !product.length,
-          colorMix: !colorMix.length,
-          worker: !worker.length
-        }
-      });
-    }
-
-    const insertQuery = `
-      INSERT INTO tasks (
-        name, 
-        description, 
-        machine_id, 
-        mould_id, 
-        product_id, 
-        color_mix_id, 
-        worker_id, 
-        target, 
-        status, 
-        created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `;
-
-    const insertParams = [
-      name,
-      description || null,
-      Number(machine_id),
-      Number(mould_id),
-      Number(product_id),
-      Number(color_mix_id),
-      Number(worker_id),
-      Number(target),
-      status,
-      req.user?.id || 1
-    ];
-
-    console.log('Insert query:', insertQuery);
-    console.log('Insert parameters:', insertParams);
-
-    const result = await pool.query(insertQuery, insertParams);
-    console.log('Insert result:', result);
-
-    // Fetch the created task with related data
-    const selectQuery = `
-      SELECT t.*, 
-        m.name as machine_name,
-        mo.name as mould_name,
-        p.name as product_name,
-        cm.name as color_mix_name,
-        u.name as worker_name,
-        COALESCE(SUM(hpl.total_pieces), 0) as completed_pieces
-      FROM tasks t
-      LEFT JOIN machines m ON t.machine_id = m.id
-      LEFT JOIN moulds mo ON t.mould_id = mo.id
-      LEFT JOIN products p ON t.product_id = p.id
-      LEFT JOIN color_mix_formulas cm ON t.color_mix_id = cm.id
-      LEFT JOIN users u ON t.worker_id = u.id
-      LEFT JOIN hourly_production_logs hpl ON t.id = hpl.id
-      WHERE t.id = $1
-      GROUP BY t.id
-    `;
-
-    console.log('Select query:', selectQuery);
-    console.log('Select parameters:', [result.insertId]);
-
-    const newTaskResult = await pool.query(selectQuery, [result.insertId]);
-    const newTask = newTaskResult.rows[0];
-    console.log('Created task:', newTask);
-
-    res.status(201).json(newTask);
-  } catch (error) {
-    console.error('[POST /api/tasks] Error creating task:', error);
-    console.error('Error stack:', error.stack);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-app.put('/api/tasks/:id', async (req, res) => {
-  console.log('[PUT /api/tasks/:id] Updating task');
-  console.log('Task ID:', req.params.id);
-  console.log('Request body:', JSON.stringify(req.body, null, 2));
-
-  try {
-    const { id } = req.params;
-    const {
-      name,
-      description,
-      machine_id,
-      mould_id,
-      product_id,
-      color_mix_id,
-      worker_id,
-      target,
-      status
-    } = req.body;
-
-    // Allow status-only update if only status is present
-    if (Object.keys(req.body).length === 1 && req.body.status !== undefined) {
-      console.log('Performing status-only update');
-      const statusQuery = 'UPDATE tasks SET status = $1 WHERE id = $2';
-      const statusParams = [status, id];
-
-      console.log('Status update query:', statusQuery);
-      console.log('Status update parameters:', statusParams);
-
-      const result = await pool.query(statusQuery, statusParams);
-      console.log('Status update result:', result);
-
-      if (result.rowCount === 0) {
-        console.log('Task not found for status update');
-        return res.status(404).json({ message: 'Task not found' });
-      }
-    } else {
-      console.log('Performing full update');
-      // Full update requires all fields
-      if (!name || !machine_id || !mould_id || !product_id || !color_mix_id || !worker_id || target === undefined) {
-        console.log('Missing fields:', {
-          name: !name,
-          machine_id: !machine_id,
-          mould_id: !mould_id,
-          product_id: !product_id,
-          color_mix_id: !color_mix_id,
-          worker_id: !worker_id,
-          target: target === undefined
-        });
-        return res.status(400).json({
-          message: 'All fields are required for full update',
-          missing: {
-            name: !name,
-            machine_id: !machine_id,
-            mould_id: !mould_id,
-            product_id: !product_id,
-            color_mix_id: !color_mix_id,
-            worker_id: !worker_id,
-            target: target === undefined
-          }
-        });
-      }
-
-      // Verify all foreign keys exist
-      console.log('Verifying foreign keys...');
-      const machineResult = await pool.query('SELECT id FROM machines WHERE id = $1', [machine_id]);
-      const mouldResult = await pool.query('SELECT id FROM moulds WHERE id = $1', [mould_id]);
-      const productResult = await pool.query('SELECT id FROM products WHERE id = $1', [product_id]);
-      const colorMixResult = await pool.query('SELECT id FROM color_mix_formulas WHERE id = $1', [color_mix_id]);
-      const workerResult = await pool.query('SELECT id FROM users WHERE id = $1', [worker_id]);
-
-      const machine = machineResult.rows;
-      const mould = mouldResult.rows;
-      const product = productResult.rows;
-      const colorMix = colorMixResult.rows;
-      const worker = workerResult.rows;
-
-      console.log('Foreign key check results:', {
-        machine: machine.length > 0,
-        mould: mould.length > 0,
-        product: product.length > 0,
-        colorMix: colorMix.length > 0,
-        worker: worker.length > 0
-      });
-
-      if (!machine.length || !mould.length || !product.length || !colorMix.length || !worker.length) {
-        return res.status(400).json({
-          message: 'Invalid foreign key references',
-          invalid: {
-            machine: !machine.length,
-            mould: !mould.length,
-            product: !product.length,
-            colorMix: !colorMix.length,
-            worker: !worker.length
-          }
-        });
-      }
-
-      const updateQuery = `
-        UPDATE tasks 
-        SET name = $1,
-            description = $2,
-            machine_id = $3,
-            mould_id = $4,
-            product_id = $5,
-            color_mix_id = $6,
-            worker_id = $7,
-            target = $8,
-            status = $9
-        WHERE id = $10
-      `;
-
-      const updateParams = [
-        name,
-        description || null,
-        Number(machine_id),
-        Number(mould_id),
-        Number(product_id),
-        Number(color_mix_id),
-        Number(worker_id),
-        Number(target),
-        status || 'pending',
-        id
-      ];
-
-      console.log('Update query:', updateQuery);
-      console.log('Update parameters:', updateParams);
-
-      const result = await pool.query(updateQuery, updateParams);
-      console.log('Update result:', result);
-
-      if (result.rowCount === 0) {
-        console.log('Task not found for full update');
-        return res.status(404).json({ message: 'Task not found' });
-      }
-    }
-
-    // Fetch updated task with related data
-    const selectQuery = `
-      SELECT t.*, 
-        m.name as machine_name,
-        mo.name as mould_name,
-        p.name as product_name,
-        cm.name as color_mix_name,
-        u.name as worker_name,
-        COALESCE(SUM(hpl.total_pieces), 0) as completed_pieces
-      FROM tasks t
-      LEFT JOIN machines m ON t.machine_id = m.id
-      LEFT JOIN moulds mo ON t.mould_id = mo.id
-      LEFT JOIN products p ON t.product_id = p.id
-      LEFT JOIN color_mix_formulas cm ON t.color_mix_id = cm.id
-      LEFT JOIN users u ON t.worker_id = u.id
-      LEFT JOIN hourly_production_logs hpl ON t.id = hpl.id
-      WHERE t.id = $1
-      GROUP BY t.id
-    `;
-
-    console.log('Select query:', selectQuery);
-    console.log('Select parameters:', [id]);
-
-    const updatedTaskResult = await pool.query(selectQuery, [id]);
-    const updatedTask = updatedTaskResult.rows[0];
-    console.log('Updated task:', updatedTask);
-
-    if (!updatedTask) {
-      console.log('Task not found after update');
-      return res.status(404).json({ message: 'Task not found after update' });
-    }
-
-    res.status(200).json(updatedTask);
-  } catch (error) {
-    console.error('[PUT /api/tasks/:id] Error updating task:', error);
-    console.error('Error stack:', error.stack);
-    res.status(500).json({
-      message: 'Server error',
-      error: error.message,
-      details: error
-    });
-  }
-});
-
-app.delete('/api/tasks/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await pool.query('DELETE FROM tasks WHERE id = $1', [id]);
-
     if (result.rowCount === 0) {
       return res.status(404).json({ message: 'Task not found' });
     }
-
-    res.status(204).send();
+    res.status(200).json(result.rows[0]);
   } catch (error) {
-    console.error('[DELETE /api/tasks/:id] Error deleting task:', error);
+    console.error('Error updating task:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Hourly Production Logs API
-app.get('/api/hourly-production-logs/:taskId', async (req, res) => {
+tasksRouter.delete('/:id', async (req, res) => {
   try {
-    const { taskId } = req.params;
-    const result = await pool.query(
-      'SELECT * FROM hourly_production_logs WHERE id = $1 ORDER BY created_at DESC, hour DESC',
-      [taskId]
-    );
-    const logs = result.rows;
-    res.status(200).json(logs);
+    const { id } = req.params;
+    const result = await pool.query('DELETE FROM tasks WHERE id = $1', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    res.status(204).send();
   } catch (error) {
-    console.error('Error fetching hourly production logs:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Error deleting task:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-app.post('/api/hourly-production-logs', async (req, res) => {
+app.use('/api/tasks', tasksRouter);
+
+// Middleware to check if user is worker
+function requireWorker(req, res, next) {
+  if (!req.user || req.user.role !== 'worker') {
+    return res.status(403).json({ message: 'Forbidden: Worker only' });
+  }
+  next();
+}
+
+// Hourly Production Logs API
+const hourlyLogsRouter = express.Router();
+hourlyLogsRouter.use(authenticateToken);
+
+// Get logs by task ID - this needs to be before the /:id route
+hourlyLogsRouter.get('/task/:taskId', async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    console.log('Fetching logs for task ID:', taskId);
+    
+    // First verify the task exists
+    const taskResult = await pool.query('SELECT id FROM tasks WHERE id = $1', [taskId]);
+    if (taskResult.rows.length === 0) {
+      console.log('Task not found:', taskId);
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    
+    const result = await pool.query(
+      'SELECT * FROM hourly_production_logs WHERE task_id = $1 ORDER BY date DESC, hour DESC',
+      [taskId]
+    );
+    
+    console.log('Query result:', result.rows);
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Error fetching hourly production logs by task:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// List all logs (admin/super_admin only)
+hourlyLogsRouter.get('/', requireAdminOrSuperAdmin, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM hourly_production_logs ORDER BY id DESC');
+    res.status(200).json(result.rows);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Get by id (admin/super_admin only)
+hourlyLogsRouter.get('/:id', requireAdminOrSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('SELECT * FROM hourly_production_logs WHERE id = $1', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ message: 'Not found' });
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Create (worker only)
+hourlyLogsRouter.post('/', requireWorker, async (req, res) => {
   try {
     const {
-      taskId,
+      task_id,
       hour,
-      totalPieces,
-      perfectPieces,
-      defectPieces,
       date,
+      perfect_pieces,
+      defect_pieces,
+      total_pieces,
+      perfect_weight,
       defective_weight,
       wastage_weight,
-      perfect_weight,
       remarks
     } = req.body;
-
-    if (!taskId || !hour || !date) {
-      return res.status(400).json({
-        message: 'Task ID, hour, and date are required fields',
-        missing: {
-          taskId: !taskId,
-          hour: !hour,
-          date: !date
-        }
-      });
+    if (
+      task_id == null ||
+      hour == null ||
+      date == null ||
+      perfect_pieces == null ||
+      defect_pieces == null ||
+      total_pieces == null
+    ) {
+      console.error('[HourlyLog POST] Missing required fields:', req.body);
+      return res.status(400).json({ message: 'Missing required fields', fields: req.body });
     }
-
-    // Verify task exists
-    const taskResult = await pool.query('SELECT id FROM tasks WHERE id = $1', [taskId]);
-    const task = taskResult.rows;
-    if (!task.length) {
-      return res.status(400).json({ message: 'Invalid task ID' });
-    }
-
     const result = await pool.query(
       `INSERT INTO hourly_production_logs 
-       (id, hour, totalPieces, perfectPieces, defectPieces, date, 
-        defective_weight, wastage_weight, perfect_weight, remarks) 
+        (task_id, hour, date, perfect_pieces, defect_pieces, total_pieces, perfect_weight, defective_weight, wastage_weight, remarks)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
-        taskId,
+        task_id,
         hour,
-        totalPieces || 0,
-        perfectPieces || 0,
-        defectPieces || 0,
         date,
+        perfect_pieces || 0,
+        defect_pieces || 0,
+        total_pieces || 0,
+        perfect_weight || null,
         defective_weight || null,
         wastage_weight || null,
-        perfect_weight || null,
         remarks || ''
       ]
     );
-
-    const insertedRecord = result.rows[0];
-
-    res.status(201).json(insertedRecord);
+    res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('Error creating hourly production log:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-app.put('/api/hourly-production-logs/:id', async (req, res) => {
+// Update (admin/super_admin only)
+hourlyLogsRouter.put('/:id', requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      hour,
-      totalPieces,
-      perfectPieces,
-      defectPieces,
-      date,
-      defective_weight,
-      wastage_weight,
-      perfect_weight,
-      remarks
-    } = req.body;
-
-    if (!hour || !date) {
-      return res.status(400).json({ message: 'Hour and date are required' });
-    }
-
+    const { hour, produced, rejected, remarks } = req.body;
     const result = await pool.query(
-      `UPDATE hourly_production_logs 
-       SET hour = $1, 
-           totalPieces = $2, 
-           perfectPieces = $3, 
-           defectPieces = $4, 
-           date = $5, 
-           defective_weight = $6, 
-           wastage_weight = $7, 
-           perfect_weight = $8, 
-           remarks = $9
-       WHERE id = $10`,
-      [
-        hour,
-        totalPieces || 0,
-        perfectPieces || 0,
-        defectPieces || 0,
-        date,
-        defective_weight || null,
-        wastage_weight || null,
-        perfect_weight || null,
-        remarks || '',
-        id
-      ]
+      'UPDATE hourly_production_logs SET hour = $1, produced = $2, rejected = $3, remarks = $4 WHERE id = $5 RETURNING *',
+      [hour, produced, rejected, remarks, id]
     );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Hourly production log not found' });
-    }
-
-    const updatedRecordResult = await pool.query(
-      'SELECT * FROM hourly_production_logs WHERE id = $1',
-      [id]
-    );
-
-    const updatedRecord = updatedRecordResult.rows[0];
-
-    res.status(200).json(updatedRecord);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    res.status(200).json(result.rows[0]);
   } catch (error) {
-    console.error('Error updating hourly production log:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-app.delete('/api/hourly-production-logs/:id', async (req, res) => {
+// Delete (admin/super_admin only)
+hourlyLogsRouter.delete('/:id', requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-
-    // First check if the record exists
-    const recordResult = await pool.query(
-      'SELECT id FROM hourly_production_logs WHERE id = $1',
-      [id]
-    );
-
-    const record = recordResult.rows;
-    if (record.length === 0) {
-      return res.status(404).json({ message: 'Hourly production log not found' });
-    }
-
-    // If record exists, proceed with deletion
-    const result = await pool.query(
-      'DELETE FROM hourly_production_logs WHERE id = $1',
-      [id]
-    );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Failed to delete hourly production log' });
-    }
-
+    const result = await pool.query('DELETE FROM hourly_production_logs WHERE id = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Not found' });
     res.status(204).send();
   } catch (error) {
-    console.error('Error deleting hourly production log:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Utility function to format JS Date to MySQL DATETIME string
-function toMySQLDateTime(date) {
-  if (!date) return null;
-  const d = new Date(date);
-  return d.toISOString().slice(0, 19).replace('T', ' ');
-}
+// Register the router BEFORE any catch-all routes
+app.use('/api/hourly-production-logs', hourlyLogsRouter);
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Global error handler caught:', err);
-  console.error('Error stack:', err.stack);
-  console.error('Error details:', {
-    message: err.message,
-    code: err.code,
-    errno: err.errno,
-    sqlState: err.sqlState,
-    sqlMessage: err.sqlMessage
-  });
+// Production Logs API (admin/super_admin only)
+const prodLogsRouter = express.Router();
+prodLogsRouter.use(authenticateToken, requireAdminOrSuperAdmin);
 
-  res.status(500).json({
-    message: 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
+prodLogsRouter.get('/', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM production_logs ORDER BY id DESC');
+    res.status(200).json(result.rows);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
 });
+prodLogsRouter.get('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('SELECT * FROM production_logs WHERE id = $1', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ message: 'Not found' });
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+prodLogsRouter.post('/', async (req, res) => {
+  try {
+    const { task_id, produced, rejected, remarks } = req.body;
+    if (!task_id || produced === undefined) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+    const result = await pool.query(
+      'INSERT INTO production_logs (task_id, produced, rejected, remarks, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [task_id, produced, rejected || 0, remarks || '', req.user.id]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+prodLogsRouter.put('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { produced, rejected, remarks } = req.body;
+    const result = await pool.query(
+      'UPDATE production_logs SET produced = $1, rejected = $2, remarks = $3 WHERE id = $4 RETURNING *',
+      [produced, rejected, remarks, id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+prodLogsRouter.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('DELETE FROM production_logs WHERE id = $1', [id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+app.use('/api/production-logs', prodLogsRouter);
 
-// Start server
+// Start the server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-  console.log('Registered routes:');
-  app._router.stack.forEach((r) => {
-    if (r.route && r.route.path) {
-      console.log(`${Object.keys(r.route.methods).join(', ').toUpperCase()} ${r.route.path}`);
-    }
-  });
 });
+
+export default app;

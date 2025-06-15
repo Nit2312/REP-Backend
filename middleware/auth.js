@@ -27,8 +27,9 @@ const authenticateToken = (req, res, next) => {
 };
 
 const requireAdminOrSuperAdmin = (req, res, next) => {
-  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'super_admin')) {
-    return res.status(403).json({ error: 'Admin or Super Admin privileges required' });
+  console.log('[AUTH DEBUG] req.user:', req.user);
+  if (!req.user || !['admin', 'super_admin', 'superadmin'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Admin or Super Admin privileges required', user: req.user });
   }
   next();
 };
