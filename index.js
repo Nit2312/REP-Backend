@@ -23,7 +23,10 @@ const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
   'https://rep-frontend-beryl.vercel.app',
-  'https://rep-backend.onrender.com', // Add more as needed
+  'https://rep-backend.onrender.com', 
+  'http://localhost:5173',
+  'http://localhost:5000'
+
 ];
 
 const corsOptions = {
@@ -179,17 +182,16 @@ app.get('/api/auth/verify', async (req, res) => {
 });
 
 // User Routes
-// GET /api/users is public
 app.get('/api/users', async (req, res) => {
   try {
     console.log('[GET /api/users] Fetching all users');
-    const result = await pool.query('SELECT * FROM users');
+    const result = await pool.query('SELECT id, user_id, name, role, created_at, updated_at FROM users ORDER BY created_at DESC');
     const rows = result.rows;
     console.log(`[GET /api/users] Found ${rows.length} users:`, rows);
     res.status(200).json(rows);
   } catch (error) {
     console.error('[GET /api/users] Error fetching users:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
@@ -218,34 +220,29 @@ function requireAdminOrSuperAdmin(req, res, next) {
 app.post('/api/users', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { userId, name, role } = req.body;
-
     if (!userId || !name || !role) {
       return res.status(400).json({ message: 'User ID, Name, and Role are required' });
     }
 
-    // Check if user already exists
-    const result = await pool.query('SELECT * FROM users WHERE userId = $1', [userId]);
-    const existingUsers = result.rows;
-
-    if (existingUsers.length > 0) {
+    // Check if user_id already exists
+    const existingUser = await pool.query('SELECT * FROM users WHERE user_id = $1', [userId]);
+    if (existingUser.rows.length > 0) {
       return res.status(400).json({ message: 'User ID already exists' });
     }
 
-    const newUserResult = await pool.query(
-      'INSERT INTO users (userId, name, role) VALUES ($1, $2, $3) RETURNING *',
+    const result = await pool.query(
+      'INSERT INTO users (user_id, name, role) VALUES ($1, $2, $3) RETURNING *',
       [userId, name, role]
     );
-
-    const newUser = newUserResult.rows[0];
-
+    const newUser = result.rows[0];
+    console.log('[POST /api/users] Created new user:', newUser);
     res.status(201).json(newUser);
   } catch (error) {
-    console.error('Error creating user:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('[POST /api/users] Error creating user:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Update user
 app.put('/api/users/:id', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -253,176 +250,359 @@ app.put('/api/users/:id', authenticateToken, requireAdminOrSuperAdmin, async (re
     if (!userId || !name || !role) {
       return res.status(400).json({ message: 'User ID, Name, and Role are required' });
     }
-    const result = await pool.query(
-      'UPDATE users SET userId = $1, name = $2, role = $3 WHERE id = $4',
-      [userId, name, role, id]
-    );
-    if (result.rowCount === 0) {
+
+    // Check if user exists
+    const existingUser = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    if (existingUser.rows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
-    const updatedUserResult = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
-    const updatedUser = updatedUserResult.rows[0];
+
+    // Check if new user_id is already taken by another user
+    const duplicateUser = await pool.query(
+      'SELECT * FROM users WHERE user_id = $1 AND id != $2',
+      [userId, id]
+    );
+    if (duplicateUser.rows.length > 0) {
+      return res.status(400).json({ message: 'User ID already exists' });
+    }
+
+    const result = await pool.query(
+      'UPDATE users SET user_id = $1, name = $2, role = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING *',
+      [userId, name, role, id]
+    );
+    const updatedUser = result.rows[0];
+    console.log('[PUT /api/users/:id] Updated user:', updatedUser);
     res.status(200).json(updatedUser);
   } catch (error) {
-    console.error('Error updating user:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('[PUT /api/users/:id] Error updating user:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Delete user
 app.delete('/api/users/:id', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM users WHERE id = $1', [id]);
-    if (result.rowCount === 0) {
+
+    // Check if user exists
+    const existingUser = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    if (existingUser.rows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
+
+    // Check if user is referenced in any tasks
+    const tasksResult = await pool.query('SELECT COUNT(*) FROM tasks WHERE worker_id = $1', [id]);
+    if (parseInt(tasksResult.rows[0].count) > 0) {
+      return res.status(400).json({ message: 'Cannot delete user: User is assigned to tasks' });
+    }
+
+    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    console.log('[DELETE /api/users/:id] Deleted user:', id);
     res.status(204).send();
   } catch (error) {
-    console.error('Error deleting user:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('[DELETE /api/users/:id] Error deleting user:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 // Machine Routes
 app.get('/api/machines', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM machines');
-    const rows = result.rows;
-    res.status(200).json(rows);
+    const machinesResult = await pool.query('SELECT * FROM machines ORDER BY created_at DESC');
+    res.status(200).json(machinesResult.rows);
   } catch (error) {
     console.error('Error fetching machines:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-app.post('/api/machines', authenticateToken, async (req, res) => {
+app.post('/api/machines', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { name, description, status } = req.body;
+    console.log('Received machine data:', req.body);
+
     if (!name) {
       return res.status(400).json({ message: 'Machine name is required' });
     }
-    const result = await pool.query(
+
+    // Check if machine with same name exists
+    const existingMachine = await pool.query(
+      'SELECT id FROM machines WHERE name = $1',
+      [name]
+    );
+
+    if (existingMachine.rows.length > 0) {
+      return res.status(400).json({ message: 'A machine with this name already exists' });
+    }
+
+    // Insert new machine
+    const newMachineResult = await pool.query(
       'INSERT INTO machines (name, description, status) VALUES ($1, $2, $3) RETURNING *',
       [name, description || '', status || 'active']
     );
-    const newMachine = result.rows[0];
+
+    const newMachine = newMachineResult.rows[0];
+    console.log('Created new machine:', newMachine);
     res.status(201).json(newMachine);
   } catch (error) {
     console.error('Error creating machine:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
-// Update machine
-app.put('/api/machines/:id', authenticateToken, async (req, res) => {
+app.put('/api/machines/:id', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, status } = req.body;
+
     if (!name) {
       return res.status(400).json({ message: 'Machine name is required' });
     }
-    const result = await pool.query(
-      'UPDATE machines SET name = $1, description = $2, status = $3 WHERE id = $4',
-      [name, description || '', status || 'active', id]
+
+    // Check if machine exists
+    const existingMachine = await pool.query(
+      'SELECT id FROM machines WHERE id = $1',
+      [id]
     );
-    if (result.rowCount === 0) {
+
+    if (existingMachine.rows.length === 0) {
       return res.status(404).json({ message: 'Machine not found' });
     }
-    const updatedMachineResult = await pool.query('SELECT * FROM machines WHERE id = $1', [id]);
-    const updatedMachine = updatedMachineResult.rows[0];
+
+    // Check if name is already taken by another machine
+    const nameCheck = await pool.query(
+      'SELECT id FROM machines WHERE name = $1 AND id != $2',
+      [name, id]
+    );
+
+    if (nameCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'A machine with this name already exists' });
+    }
+
+    // Update machine
+    const updateResult = await pool.query(
+      'UPDATE machines SET name = $1, description = $2, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING *',
+      [name, description || '', status || 'active', id]
+    );
+
+    const updatedMachine = updateResult.rows[0];
+    console.log('Updated machine:', updatedMachine);
     res.status(200).json(updatedMachine);
   } catch (error) {
     console.error('Error updating machine:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
-// Delete machine
-app.delete('/api/machines/:id', authenticateToken, async (req, res) => {
+app.delete('/api/machines/:id', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM machines WHERE id = $1', [id]);
-    if (result.rowCount === 0) {
+
+    // Check if machine exists
+    const existingMachine = await pool.query(
+      'SELECT id FROM machines WHERE id = $1',
+      [id]
+    );
+
+    if (existingMachine.rows.length === 0) {
       return res.status(404).json({ message: 'Machine not found' });
     }
+
+    // Check if machine is referenced in any tasks
+    const taskCheck = await pool.query(
+      'SELECT id FROM tasks WHERE machine_id = $1',
+      [id]
+    );
+
+    if (taskCheck.rows.length > 0) {
+      return res.status(400).json({ 
+        message: 'Cannot delete machine as it is referenced in existing tasks',
+        taskCount: taskCheck.rows.length
+      });
+    }
+
+    // Delete machine
+    await pool.query('DELETE FROM machines WHERE id = $1', [id]);
     res.status(204).send();
   } catch (error) {
     console.error('Error deleting machine:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
 // Raw Material Routes
 app.get('/api/materials', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM raw_materials');
-    const rows = result.rows;
-    res.status(200).json(rows);
+    const result = await pool.query('SELECT * FROM raw_materials ORDER BY created_at DESC');
+    res.status(200).json(result.rows);
   } catch (error) {
     console.error('Error fetching raw materials:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 app.post('/api/materials', async (req, res) => {
   try {
+    console.log('[POST /api/materials] Received request body:', req.body);
     const { name, quantity, unit, threshold, description } = req.body;
-
+    
+    // Validate required fields
     if (!name || !quantity || !unit) {
+      console.log('[POST /api/materials] Missing required fields:', { name, quantity, unit });
       return res.status(400).json({ message: 'Name, quantity, and unit are required' });
     }
 
-    const result = await pool.query(
-      'INSERT INTO raw_materials (name, quantity, unit, threshold, description) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [name, quantity, unit, threshold || 0, description || '']
-    );
+    // Validate numeric fields
+    if (isNaN(Number(quantity)) || Number(quantity) < 0) {
+      console.log('[POST /api/materials] Invalid quantity:', quantity);
+      return res.status(400).json({ message: 'Quantity must be a positive number' });
+    }
+    if (threshold !== undefined && (isNaN(Number(threshold)) || Number(threshold) < 0)) {
+      console.log('[POST /api/materials] Invalid threshold:', threshold);
+      return res.status(400).json({ message: 'Threshold must be a positive number' });
+    }
 
-    const newMaterial = result.rows[0];
+    // Check for duplicate name
+    console.log('[POST /api/materials] Checking for duplicate name:', name);
+    const dup = await pool.query('SELECT * FROM raw_materials WHERE name = $1', [name]);
+    if (dup.rows.length > 0) {
+      console.log('[POST /api/materials] Duplicate name found');
+      return res.status(400).json({ message: 'Material name already exists' });
+    }
 
-    res.status(201).json(newMaterial);
+    // Insert new material
+    console.log('[POST /api/materials] Attempting to insert material:', {
+      name,
+      quantity: Number(quantity),
+      unit,
+      threshold: threshold ? Number(threshold) : 0,
+      description: description || ''
+    });
+
+    const insertQuery = `
+      INSERT INTO raw_materials (name, quantity, unit, threshold, description) 
+      VALUES ($1, $2, $3, $4, $5) 
+      RETURNING *
+    `;
+    const insertParams = [
+      name,
+      Number(quantity),
+      unit,
+      threshold ? Number(threshold) : 0,
+      description || ''
+    ];
+
+    console.log('[POST /api/materials] Executing query:', insertQuery);
+    console.log('[POST /api/materials] With parameters:', insertParams);
+
+    const result = await pool.query(insertQuery, insertParams);
+
+    console.log('[POST /api/materials] Successfully inserted material:', result.rows[0]);
+    res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('Error creating raw material:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('[POST /api/materials] Error creating raw material:', error);
+    console.error('[POST /api/materials] Error details:', {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      hint: error.hint,
+      where: error.where,
+      schema: error.schema,
+      table: error.table,
+      column: error.column,
+      dataType: error.dataType,
+      constraint: error.constraint,
+      stack: error.stack
+    });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack,
+      code: error.code,
+      detail: error.detail,
+      hint: error.hint
+    });
   }
 });
 
-// Update material
 app.put('/api/materials/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { name, quantity, unit, threshold, description } = req.body;
-    if (!name || quantity == null || !unit) {
+
+    // Validate required fields
+    if (!name || !quantity || !unit) {
       return res.status(400).json({ message: 'Name, quantity, and unit are required' });
     }
-    const result = await pool.query(
-      'UPDATE raw_materials SET name = $1, quantity = $2, unit = $3, threshold = $4, description = $5 WHERE id = $6',
-      [name, quantity, unit, threshold || 0, description || '', id]
-    );
-    if (result.rowCount === 0) {
+
+    // Validate numeric fields
+    if (isNaN(Number(quantity)) || Number(quantity) < 0) {
+      return res.status(400).json({ message: 'Quantity must be a positive number' });
+    }
+    if (threshold !== undefined && (isNaN(Number(threshold)) || Number(threshold) < 0)) {
+      return res.status(400).json({ message: 'Threshold must be a positive number' });
+    }
+
+    // Check if material exists
+    const existing = await pool.query('SELECT * FROM raw_materials WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
       return res.status(404).json({ message: 'Material not found' });
     }
-    const updatedMaterialResult = await pool.query('SELECT * FROM raw_materials WHERE id = $1', [id]);
-    const updatedMaterial = updatedMaterialResult.rows[0];
-    res.status(200).json(updatedMaterial);
+
+    // Check for duplicate name (excluding self)
+    const dup = await pool.query('SELECT * FROM raw_materials WHERE name = $1 AND id != $2', [name, id]);
+    if (dup.rows.length > 0) {
+      return res.status(400).json({ message: 'Material name already exists' });
+    }
+
+    // Update material
+    const result = await pool.query(
+      'UPDATE raw_materials SET name = $1, quantity = $2, unit = $3, threshold = $4, description = $5 WHERE id = $6 RETURNING *',
+      [name, Number(quantity), unit, threshold ? Number(threshold) : 0, description || '', id]
+    );
+
+    res.status(200).json(result.rows[0]);
   } catch (error) {
     console.error('Error updating material:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
-// Delete material
 app.delete('/api/materials/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM raw_materials WHERE id = $1', [id]);
-    if (result.rowCount === 0) {
+
+    // Check if material exists
+    const existing = await pool.query('SELECT * FROM raw_materials WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
       return res.status(404).json({ message: 'Material not found' });
     }
+
+    // Delete material
+    await pool.query('DELETE FROM raw_materials WHERE id = $1', [id]);
     res.status(204).send();
   } catch (error) {
     console.error('Error deleting material:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
@@ -430,52 +610,68 @@ app.delete('/api/materials/:id', async (req, res) => {
 app.get('/api/color-mix-formulas', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM color_mix_formulas');
-    const rows = result.rows;
-    res.status(200).json(rows);
+    res.status(200).json(result.rows);
   } catch (error) {
     console.error('Error fetching color mix formulas:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 app.post('/api/color-mix-formulas', async (req, res) => {
   try {
+    console.log('POST /api/color-mix-formulas - Request body:', req.body);
     const { name, materialCount, formula, colorWeight, createdBy } = req.body;
     if (!name || !materialCount || !formula || !colorWeight || !createdBy) {
-      return res.status(400).json({ message: 'Missing required fields' });
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        received: { name, materialCount, formula, colorWeight, createdBy }
+      });
+    }
+    // Check for duplicate name
+    const dup = await pool.query('SELECT * FROM color_mix_formulas WHERE name = $1', [name]);
+    if (dup.rows.length > 0) {
+      return res.status(400).json({ message: 'Formula name already exists' });
     }
     const result = await pool.query(
-      'INSERT INTO color_mix_formulas (name, materialCount, formula, colorWeight, createdBy) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      'INSERT INTO color_mix_formulas (name, material_count, formula, color_weight, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
       [name, materialCount, formula, colorWeight, createdBy]
     );
-    const newFormula = result.rows[0];
-    res.status(201).json(newFormula);
+    console.log('POST /api/color-mix-formulas - Created formula:', result.rows[0]);
+    res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Error creating color mix formula:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 app.put('/api/color-mix-formulas/:id', async (req, res) => {
   try {
+    console.log('PUT /api/color-mix-formulas/:id - Request body:', req.body);
     const { id } = req.params;
     const { name, materialCount, formula, colorWeight } = req.body;
     if (!name || !materialCount || !formula || !colorWeight) {
-      return res.status(400).json({ message: 'Missing required fields' });
+      return res.status(400).json({ 
+        message: 'Missing required fields',
+        received: { name, materialCount, formula, colorWeight }
+      });
+    }
+    // Check for duplicate name (excluding self)
+    const dup = await pool.query('SELECT * FROM color_mix_formulas WHERE name = $1 AND id != $2', [name, id]);
+    if (dup.rows.length > 0) {
+      return res.status(400).json({ message: 'Formula name already exists' });
     }
     const result = await pool.query(
-      'UPDATE color_mix_formulas SET name = $1, materialCount = $2, formula = $3, colorWeight = $4 WHERE id = $5',
+      'UPDATE color_mix_formulas SET name = $1, material_count = $2, formula = $3, color_weight = $4 WHERE id = $5 RETURNING *',
       [name, materialCount, formula, colorWeight, id]
     );
     if (result.rowCount === 0) {
       return res.status(404).json({ message: 'Formula not found' });
     }
-    const updatedFormulaResult = await pool.query('SELECT * FROM color_mix_formulas WHERE id = $1', [id]);
-    const updatedFormula = updatedFormulaResult.rows[0];
-    res.status(200).json(updatedFormula);
+    console.log('PUT /api/color-mix-formulas/:id - Updated formula:', result.rows[0]);
+    res.status(200).json(result.rows[0]);
   } catch (error) {
     console.error('Error updating color mix formula:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
@@ -489,83 +685,97 @@ app.delete('/api/color-mix-formulas/:id', async (req, res) => {
     res.status(204).send();
   } catch (error) {
     console.error('Error deleting color mix formula:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Color Mix Entries CRUD
+// Color Mix Entries API
 app.get('/api/color-mix-entries', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT cme.*, cmf.name as formulaName, cmf.formula as formulaJson
+    console.log('GET /api/color-mix-entries - Fetching all color mix entries');
+    const [rows] = await pool.query(`
+      SELECT 
+        cme.*,
+        f.name as formula_name
       FROM color_mix_entries cme
-      JOIN color_mix_formulas cmf ON cme.formula_id = cmf.id
+      LEFT JOIN color_mix_formulas f ON cme.formula_id = f.id
+      ORDER BY cme.created_at DESC
     `);
-    const rows = result.rows;
-    res.status(200).json(rows);
+    console.log('GET /api/color-mix-entries - Found entries:', rows.length);
+    res.json(rows);
   } catch (error) {
-    console.error('Error fetching color mix entries:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('GET /api/color-mix-entries - Error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
 app.post('/api/color-mix-entries', async (req, res) => {
   try {
+    console.log('POST /api/color-mix-entries - Incoming body:', req.body);
     const { formulaId, materialWeights, colorRequirement } = req.body;
-    console.log('Received materialWeights:', materialWeights, 'Type:', typeof materialWeights);
-    if (!formulaId || !materialWeights || !colorRequirement) {
-      return res.status(400).json({ message: 'Missing required fields' });
+    console.log('Fields:', { formulaId, materialWeights, colorRequirement });
+    console.log('Types:', {
+      formulaId: typeof formulaId,
+      materialWeights: typeof materialWeights,
+      colorRequirement: typeof colorRequirement
+    });
+    if (!formulaId) {
+      console.error('Missing formulaId');
+      return res.status(400).json({ message: 'Missing required field: formulaId', received: req.body });
     }
-    // Accept native array for materialWeights and store as JSON string
+    if (!materialWeights) {
+      console.error('Missing materialWeights');
+      return res.status(400).json({ message: 'Missing required field: materialWeights', received: req.body });
+    }
+    if (colorRequirement === undefined) {
+      console.error('Missing colorRequirement');
+      return res.status(400).json({ message: 'Missing required field: colorRequirement', received: req.body });
+    }
     let parsedMaterialWeights = materialWeights;
     if (typeof materialWeights === 'string') {
       try {
         parsedMaterialWeights = JSON.parse(materialWeights);
       } catch (e) {
-        return res.status(400).json({ message: 'Invalid materialWeights format' });
+        console.error('Invalid materialWeights format:', materialWeights);
+        return res.status(400).json({ message: 'Invalid materialWeights format', received: materialWeights });
       }
     }
-    let standardizedMaterialWeights;
-    if (Array.isArray(parsedMaterialWeights)) {
-      standardizedMaterialWeights = parsedMaterialWeights.map(entry => ({
-        materialId: String(entry.materialId),
-        quantity: String(entry.quantity)
-      }));
-    } else if (typeof parsedMaterialWeights === 'object' && parsedMaterialWeights !== null) {
-      standardizedMaterialWeights = Object.entries(parsedMaterialWeights).map(([materialId, quantity]) => ({
-        materialId: String(materialId),
-        quantity: String(quantity)
-      }));
-    } else {
-      return res.status(400).json({ message: 'Invalid materialWeights format' });
+    if (!Array.isArray(parsedMaterialWeights)) {
+      console.error('materialWeights is not an array:', parsedMaterialWeights);
+      return res.status(400).json({ message: 'materialWeights must be an array', received: parsedMaterialWeights });
     }
-    // Store as JSON string for MariaDB JSON column (no CAST)
-    const result = await pool.query(
-      'INSERT INTO color_mix_entries (formulaId, materialWeights, colorRequirement) VALUES ($1, $2, $3) RETURNING *',
-      [formulaId, JSON.stringify(standardizedMaterialWeights), colorRequirement]
-    );
+    const colorRequirementNum = Number(colorRequirement);
+    if (isNaN(colorRequirementNum)) {
+      console.error('colorRequirement is not a number:', colorRequirement);
+      return res.status(400).json({ message: 'colorRequirement must be a number', received: colorRequirement });
+    }
+    const insertQuery = `
+      INSERT INTO color_mix_entries (formula_id, material_weights, color_requirement)
+      VALUES ($1, $2, $3) RETURNING *
+    `;
+    const insertParams = [
+      formulaId,
+      JSON.stringify(parsedMaterialWeights),
+      colorRequirementNum
+    ];
+    console.log('Insert query:', insertQuery);
+    console.log('Insert params:', insertParams);
+    const result = await pool.query(insertQuery, insertParams);
     const newEntry = result.rows[0];
     res.status(201).json(newEntry);
   } catch (error) {
-    console.error('Error creating color mix entry:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('POST /api/color-mix-entries - Error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
 app.put('/api/color-mix-entries/:id', async (req, res) => {
   try {
-    let { id } = req.params;
     const { formulaId, materialWeights, colorRequirement } = req.body;
-    console.log('PUT /api/color-mix-entries/:id', { id, type: typeof id, formulaId, materialWeights, colorRequirement });
-    if (!formulaId || !materialWeights || !colorRequirement) {
+    const { id } = req.params;
+    if (!formulaId || !materialWeights || colorRequirement === undefined) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
-    // Ensure id is a number
-    id = Number(id);
-    if (isNaN(id)) {
-      return res.status(400).json({ message: 'Invalid id parameter' });
-    }
-    // Accept native array for materialWeights and store as JSON string
     let parsedMaterialWeights = materialWeights;
     if (typeof materialWeights === 'string') {
       try {
@@ -574,79 +784,38 @@ app.put('/api/color-mix-entries/:id', async (req, res) => {
         return res.status(400).json({ message: 'Invalid materialWeights format' });
       }
     }
-    let standardizedMaterialWeights;
-    if (Array.isArray(parsedMaterialWeights)) {
-      standardizedMaterialWeights = parsedMaterialWeights.map(entry => ({
-        materialId: String(entry.materialId),
-        quantity: String(entry.quantity)
-      }));
-    } else if (typeof parsedMaterialWeights === 'object' && parsedMaterialWeights !== null) {
-      standardizedMaterialWeights = Object.entries(parsedMaterialWeights).map(([materialId, quantity]) => ({
-        materialId: String(materialId),
-        quantity: String(quantity)
-      }));
-    } else {
-      return res.status(400).json({ message: 'Invalid materialWeights format' });
+    // Ensure colorRequirement is a number
+    const colorRequirementNum = Number(colorRequirement);
+    if (isNaN(colorRequirementNum)) {
+      return res.status(400).json({ message: 'colorRequirement must be a number' });
     }
-    // Store as JSON string for MariaDB JSON column (no CAST)
-    const result = await pool.query(
-      'UPDATE color_mix_entries SET formulaId = $1, materialWeights = $2, colorRequirement = $3 WHERE id = $4',
-      [formulaId, JSON.stringify(standardizedMaterialWeights), colorRequirement, id]
-    );
-    console.log('Update result:', result);
+    const updateQuery = `
+      UPDATE color_mix_entries
+      SET formula_id = $1, material_weights = $2, color_requirement = $3
+      WHERE id = $4 RETURNING *
+    `;
+    const updateParams = [
+      formulaId,
+      JSON.stringify(parsedMaterialWeights),
+      colorRequirementNum,
+      id
+    ];
+    const result = await pool.query(updateQuery, updateParams);
     if (result.rowCount === 0) {
       return res.status(404).json({ message: 'Color mix entry not found' });
     }
-    const updatedEntryResult = await pool.query('SELECT * FROM color_mix_entries WHERE id = $1', [id]);
-    const updatedEntry = updatedEntryResult.rows[0];
-    res.status(200).json(updatedEntry);
+    res.status(200).json(result.rows[0]);
   } catch (error) {
-    console.error('Error updating color mix entry:', error);
-    if (error && error.stack) console.error(error.stack);
-    res.status(500).json({ message: 'Server error', error: error.message, received: req.body });
-  }
-});
-
-app.delete('/api/color-mix-entries/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('DELETE /api/color-mix-entries/:id', { id });
-    const result = await pool.query('DELETE FROM color_mix_entries WHERE id = $1', [id]);
-    console.log('Delete result:', result);
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Color mix entry not found' });
-    }
-    res.status(204).send();
-  } catch (error) {
-    console.error('Error deleting color mix entry:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('PUT /api/color-mix-entries/:id - Error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
 // Moulds Routes
 app.get('/api/moulds', async (req, res) => {
   try {
-    // Check if moulds table exists in PostgreSQL
-    const result = await pool.query(`
-      SELECT 1 FROM information_schema.tables 
-      WHERE table_schema = 'public' AND table_name = 'moulds'
-    `);
-    if (result.rowCount === 0) {
-      // Create moulds table if it doesn't exist
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS moulds (
-          id SERIAL PRIMARY KEY,
-          name VARCHAR(100) NOT NULL,
-          description TEXT,
-          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'maintenance')),
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-    }
-    const mouldsResult = await pool.query('SELECT * FROM moulds');
-    const rows = mouldsResult.rows;
-    res.status(200).json(rows);
+    const mouldsResult = await pool.query('SELECT * FROM moulds ORDER BY created_at DESC');
+    res.status(200).json(mouldsResult.rows);
   } catch (error) {
     console.error('Error fetching moulds:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -662,33 +831,32 @@ app.post('/api/moulds', authenticateToken, requireAdminOrSuperAdmin, async (req,
       return res.status(400).json({ message: 'Mould name is required' });
     }
 
-    // Check if moulds table exists
-    const result = await pool.query('SHOW TABLES LIKE "moulds"');
-    const tables = result.rows;
-    if (tables.length === 0) {
-      // Create moulds table if it doesn't exist
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS moulds (
-          id SERIAL PRIMARY KEY,
-          name VARCHAR(100) NOT NULL,
-          description TEXT,
-          status ENUM('active', 'inactive', 'maintenance') DEFAULT 'active',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )
-      `);
+    // Check if mould with same name exists
+    const existingMould = await pool.query(
+      'SELECT id FROM moulds WHERE name = $1',
+      [name]
+    );
+
+    if (existingMould.rows.length > 0) {
+      return res.status(400).json({ message: 'A mould with this name already exists' });
     }
 
+    // Insert new mould
     const newMouldResult = await pool.query(
       'INSERT INTO moulds (name, description, status) VALUES ($1, $2, $3) RETURNING *',
       [name, description || '', status || 'active']
     );
 
     const newMould = newMouldResult.rows[0];
+    console.log('Created new mould:', newMould);
     res.status(201).json(newMould);
   } catch (error) {
     console.error('Error creating mould:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
@@ -701,97 +869,141 @@ app.put('/api/moulds/:id', authenticateToken, requireAdminOrSuperAdmin, async (r
       return res.status(400).json({ message: 'Mould name is required' });
     }
 
-    const result = await pool.query(
-      'UPDATE moulds SET name = $1, description = $2, status = $3 WHERE id = $4',
-      [name, description || '', status || 'active', id]
+    // Check if mould exists
+    const existingMould = await pool.query(
+      'SELECT id FROM moulds WHERE id = $1',
+      [id]
     );
 
-    if (result.rowCount === 0) {
+    if (existingMould.rows.length === 0) {
       return res.status(404).json({ message: 'Mould not found' });
     }
 
-    const updatedMouldResult = await pool.query('SELECT * FROM moulds WHERE id = $1', [id]);
-    const updatedMould = updatedMouldResult.rows[0];
+    // Check if name is already taken by another mould
+    const nameCheck = await pool.query(
+      'SELECT id FROM moulds WHERE name = $1 AND id != $2',
+      [name, id]
+    );
+
+    if (nameCheck.rows.length > 0) {
+      return res.status(400).json({ message: 'A mould with this name already exists' });
+    }
+
+    // Update mould
+    const updateResult = await pool.query(
+      'UPDATE moulds SET name = $1, description = $2, status = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING *',
+      [name, description || '', status || 'active', id]
+    );
+
+    const updatedMould = updateResult.rows[0];
+    console.log('Updated mould:', updatedMould);
     res.status(200).json(updatedMould);
   } catch (error) {
     console.error('Error updating mould:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
 app.delete('/api/moulds/:id', authenticateToken, requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM moulds WHERE id = $1', [id]);
 
-    if (result.rowCount === 0) {
+    // Check if mould exists
+    const existingMould = await pool.query(
+      'SELECT id FROM moulds WHERE id = $1',
+      [id]
+    );
+
+    if (existingMould.rows.length === 0) {
       return res.status(404).json({ message: 'Mould not found' });
     }
 
+    // Check if mould is referenced in any tasks
+    const taskCheck = await pool.query(
+      'SELECT id FROM tasks WHERE mould_id = $1',
+      [id]
+    );
+
+    if (taskCheck.rows.length > 0) {
+      return res.status(400).json({ 
+        message: 'Cannot delete mould as it is referenced in existing tasks',
+        taskCount: taskCheck.rows.length
+      });
+    }
+
+    // Delete mould
+    await pool.query('DELETE FROM moulds WHERE id = $1', [id]);
     res.status(204).send();
   } catch (error) {
     console.error('Error deleting mould:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: error.stack 
+    });
   }
 });
 
-// Products Routes (CRUD for products table with correct schema)
+// Products Routes
 app.get('/api/products', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM products');
-    const rows = result.rows;
-    res.status(200).json(rows);
+    res.status(200).json(result.rows);
   } catch (error) {
     console.error('Error fetching products:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 app.post('/api/products', async (req, res) => {
   try {
-    const { name, description, category, status, perhourproduction } = req.body;
-
+    const { name, description, category, status, per_hour_production } = req.body;
     if (!name || !category) {
       return res.status(400).json({ message: 'Product name and category are required' });
     }
-
+    // Check for duplicate name
+    const dup = await pool.query('SELECT * FROM products WHERE name = $1', [name]);
+    if (dup.rows.length > 0) {
+      return res.status(400).json({ message: 'Product name already exists' });
+    }
     const result = await pool.query(
-      'INSERT INTO products (name, description, category, status, perhourproduction) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [name, description || null, category, status || 'active', perhourproduction || null]
+      'INSERT INTO products (name, description, category, status, per_hour_production) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, description || null, category, status || 'active', per_hour_production || null]
     );
-
-    const newProduct = result.rows[0];
-    res.status(201).json(newProduct);
+    res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Error creating product:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 app.put('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, category, status, perhourproduction } = req.body;
-
+    const { name, description, category, status, per_hour_production } = req.body;
     if (!name || !category) {
       return res.status(400).json({ message: 'Product name and category are required' });
     }
-
+    // Check for duplicate name (excluding self)
+    const dup = await pool.query('SELECT * FROM products WHERE name = $1 AND id != $2', [name, id]);
+    if (dup.rows.length > 0) {
+      return res.status(400).json({ message: 'Product name already exists' });
+    }
     const result = await pool.query(
-      'UPDATE products SET name = $1, description = $2, category = $3, status = $4, perhourproduction = $5 WHERE id = $6',
-      [name, description || null, category, status || 'active', perhourproduction || null, id]
+      'UPDATE products SET name = $1, description = $2, category = $3, status = $4, per_hour_production = $5 WHERE id = $6 RETURNING *',
+      [name, description || null, category, status || 'active', per_hour_production || null, id]
     );
-
     if (result.rowCount === 0) {
       return res.status(404).json({ message: 'Product not found' });
     }
-
-    const updatedProductResult = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
-    const updatedProduct = updatedProductResult.rows[0];
-    res.status(200).json(updatedProduct);
+    res.status(200).json(result.rows[0]);
   } catch (error) {
     console.error('Error updating product:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
@@ -799,15 +1011,13 @@ app.delete('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM products WHERE id = $1', [id]);
-
     if (result.rowCount === 0) {
       return res.status(404).json({ message: 'Product not found' });
     }
-
     res.status(204).send();
   } catch (error) {
     console.error('Error deleting product:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 

@@ -1,26 +1,23 @@
-import { Pool } from 'pg';
+import pg from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const connectionString = process.env.DATABASE_URL || 'postgres://user:password@localhost:5432/mydatabase';
-
-const pool = new Pool({
-  connectionString,
-  ssl: { rejectUnauthorized: false },
-  max: 10,
-  idleTimeoutMillis: 30000,
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false // Required for Neon.tech
+  }
 });
 
 // Test the connection
-pool.connect()
-  .then(client => {
-    console.log('Database connected successfully');
-    client.release();
-  })
-  .catch(err => {
+pool.connect((err, client, release) => {
+  if (err) {
     console.error('Error connecting to the database:', err);
-    process.exit(1);
-  });
+    return;
+  }
+  console.log('Successfully connected to the database');
+  release();
+});
 
 export default pool;
