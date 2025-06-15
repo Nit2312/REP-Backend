@@ -793,6 +793,37 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
+app.post('/api/products', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    if (!name) return res.status(400).json({ message: 'Name is required' });
+    const result = await pool.query(
+      'INSERT INTO products (name, description) VALUES ($1, $2) RETURNING *',
+      [name, description || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating product:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+app.put('/api/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description } = req.body;
+    if (!name) return res.status(400).json({ message: 'Name is required' });
+    const result = await pool.query(
+      'UPDATE products SET name = $1, description = $2 WHERE id = $3 RETURNING *',
+      [name, description || null, id]
+    );
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating product:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
 // Moulds API
 app.get('/api/moulds', async (req, res) => {
   try {
@@ -800,6 +831,37 @@ app.get('/api/moulds', async (req, res) => {
     res.status(200).json(result.rows);
   } catch (error) {
     console.error('Error fetching moulds:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+app.post('/api/moulds', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    if (!name) return res.status(400).json({ message: 'Name is required' });
+    const result = await pool.query(
+      'INSERT INTO moulds (name, description) VALUES ($1, $2) RETURNING *',
+      [name, description || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating mould:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+app.put('/api/moulds/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description } = req.body;
+    if (!name) return res.status(400).json({ message: 'Name is required' });
+    const result = await pool.query(
+      'UPDATE moulds SET name = $1, description = $2 WHERE id = $3 RETURNING *',
+      [name, description || null, id]
+    );
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating mould:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
@@ -1074,6 +1136,41 @@ prodLogsRouter.delete('/:id', async (req, res) => {
   }
 });
 app.use('/api/production-logs', prodLogsRouter);
+
+// Dashboard stats endpoint
+app.get('/api/dashboard/stats', async (req, res) => {
+  try {
+    // Example: return total counts for each entity
+    const [users, products, tasks, machines, moulds] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM users'),
+      pool.query('SELECT COUNT(*) FROM products'),
+      pool.query('SELECT COUNT(*) FROM tasks'),
+      pool.query('SELECT COUNT(*) FROM machines'),
+      pool.query('SELECT COUNT(*) FROM moulds'),
+    ]);
+    res.json({
+      userCount: Number(users.rows[0].count),
+      productCount: Number(products.rows[0].count),
+      taskCount: Number(tasks.rows[0].count),
+      machineCount: Number(machines.rows[0].count),
+      mouldCount: Number(moulds.rows[0].count),
+    });
+  } catch (error) {
+    console.error('Error fetching dashboard stats:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Tasks API (public GET for dashboard/task page)
+app.get('/api/tasks', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM tasks ORDER BY id DESC');
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Error fetching tasks:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
 
 // Start the server
 app.listen(PORT, () => {
