@@ -22,7 +22,8 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
-  'https://rep-frontend-67dj3hohe-nit2312s-projects.vercel.app', // <-- your Vercel frontend
+
+  'https://rep-frontend-nan67oyti-nit2312s-projects.vercel.app', // <-- newly added Vercel frontend
   'https://rep-frontend-beryl.vercel.app',
   'https://rep-backend.onrender.com', 
   'http://localhost:5173',
