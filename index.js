@@ -214,7 +214,8 @@ app.get('/api/workers', async (req, res) => {
 // POST/PUT/DELETE require authentication and admin/super_admin
 function requireAdminOrSuperAdmin(req, res, next) {
   if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'super_admin')) {
-    return res.status(403).json({ message: 'Forbidden: Admin or Super Admin only' });
+    console.warn('[AUTH] Forbidden: Admin/SuperAdmin only. User:', req.user);
+    return res.status(403).json({ message: 'Forbidden: Admin/SuperAdmin only', user: req.user });
   }
   next();
 }
@@ -872,8 +873,32 @@ tasksRouter.use(authenticateToken);
 
 tasksRouter.get('/', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM tasks ORDER BY id DESC');
-    res.status(200).json(result.rows);
+    // Join with related tables to get names, but also fallback to IDs if names are missing
+    const result = await pool.query(`
+      SELECT t.*, 
+        COALESCE(m.name, '') AS machine_name, 
+        COALESCE(mo.name, '') AS mould_name, 
+        COALESCE(p.name, '') AS product_name, 
+        COALESCE(cm.name, '') AS color_mix_name, 
+        COALESCE(w.name, '') AS worker_name
+      FROM tasks t
+      LEFT JOIN machines m ON t.machine_id = m.id
+      LEFT JOIN moulds mo ON t.mould_id = mo.id
+      LEFT JOIN products p ON t.product_id = p.id
+      LEFT JOIN color_mix_formulas cm ON t.color_mix_id = cm.id
+      LEFT JOIN users w ON t.worker_id = w.id
+      ORDER BY t.id DESC
+    `);
+    // For each task, if name is missing, fallback to ID as string
+    const tasks = result.rows.map(task => ({
+      ...task,
+      machine_name: task.machine_name || (task.machine_id ? `ID: ${task.machine_id}` : ''),
+      mould_name: task.mould_name || (task.mould_id ? `ID: ${task.mould_id}` : ''),
+      product_name: task.product_name || (task.product_id ? `ID: ${task.product_id}` : ''),
+      color_mix_name: task.color_mix_name || (task.color_mix_id ? `ID: ${task.color_mix_id}` : ''),
+      worker_name: task.worker_name || (task.worker_id ? `ID: ${task.worker_id}` : ''),
+    }));
+    res.status(200).json(tasks);
   } catch (error) {
     console.error('Error fetching tasks:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -934,10 +959,11 @@ tasksRouter.delete('/:id', async (req, res) => {
 
 app.use('/api/tasks', tasksRouter);
 
-// Middleware to check if user is worker
-function requireWorker(req, res, next) {
-  if (!req.user || req.user.role !== 'worker') {
-    return res.status(403).json({ message: 'Forbidden: Worker only' });
+// Middleware to check if user is worker, admin, or super_admin
+function requireWorkerOrAdmin(req, res, next) {
+  if (!req.user || (req.user.role !== 'worker' && req.user.role !== 'admin' && req.user.role !== 'super_admin')) {
+    console.warn('[AUTH] Forbidden: Worker/Admin/SuperAdmin only. User:', req.user);
+    return res.status(403).json({ message: 'Forbidden: Worker/Admin/SuperAdmin only', user: req.user });
   }
   next();
 }
@@ -994,8 +1020,8 @@ hourlyLogsRouter.get('/:id', requireAdminOrSuperAdmin, async (req, res) => {
   }
 });
 
-// Create (worker only)
-hourlyLogsRouter.post('/', requireWorker, async (req, res) => {
+// Create (worker, admin, or super_admin)
+hourlyLogsRouter.post('/', requireWorkerOrAdmin, async (req, res) => {
   try {
     const {
       task_id,
@@ -1047,15 +1073,36 @@ hourlyLogsRouter.post('/', requireWorker, async (req, res) => {
 hourlyLogsRouter.put('/:id', requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { hour, produced, rejected, remarks } = req.body;
+    const {
+      hour,
+      date,
+      perfect_pieces,
+      defect_pieces,
+      total_pieces,
+      perfect_weight,
+      defective_weight,
+      wastage_weight,
+      remarks
+    } = req.body;
     const result = await pool.query(
-      'UPDATE hourly_production_logs SET hour = $1, produced = $2, rejected = $3, remarks = $4 WHERE id = $5 RETURNING *',
-      [hour, produced, rejected, remarks, id]
+      `UPDATE hourly_production_logs SET 
+        hour = $1, 
+        date = $2, 
+        perfect_pieces = $3, 
+        defect_pieces = $4, 
+        total_pieces = $5, 
+        perfect_weight = $6, 
+        defective_weight = $7, 
+        wastage_weight = $8, 
+        remarks = $9 
+      WHERE id = $10 RETURNING *`,
+      [hour, date, perfect_pieces, defect_pieces, total_pieces, perfect_weight, defective_weight, wastage_weight, remarks, id]
     );
     if (result.rowCount === 0) return res.status(404).json({ message: 'Not found' });
     res.status(200).json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error updating hourly production log:', error, error.stack);
+    res.status(500).json({ message: 'Server error', error: error.message, stack: error.stack });
   }
 });
 
@@ -1096,7 +1143,7 @@ prodLogsRouter.get('/:id', async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
-prodLogsRouter.post('/', async (req, res) => {
+prodLogsRouter.post('/', requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { task_id, produced, rejected, remarks } = req.body;
     if (!task_id || produced === undefined) {
@@ -1111,7 +1158,7 @@ prodLogsRouter.post('/', async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
-prodLogsRouter.put('/:id', async (req, res) => {
+prodLogsRouter.put('/:id', requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { produced, rejected, remarks } = req.body;
@@ -1122,10 +1169,11 @@ prodLogsRouter.put('/:id', async (req, res) => {
     if (result.rowCount === 0) return res.status(404).json({ message: 'Not found' });
     res.status(200).json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error updating production log:', error, error.stack);
+    res.status(500).json({ message: 'Server error', error: error.message, stack: error.stack });
   }
 });
-prodLogsRouter.delete('/:id', async (req, res) => {
+prodLogsRouter.delete('/:id', requireAdminOrSuperAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query('DELETE FROM production_logs WHERE id = $1', [id]);
